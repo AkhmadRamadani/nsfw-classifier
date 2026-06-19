@@ -1,0 +1,234 @@
+"""
+NSFW Detection API
+Production-ready FastAPI service with async queue processing.
+"""
+
+import uuid
+import time
+import asyncio
+from contextlib import asynccontextmanager
+from typing import Optional
+
+from fastapi import FastAPI, HTTPException, UploadFile, File, Form, BackgroundTasks
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
+
+from app.schemas import (
+    JobResponse, JobResultResponse,
+    BatchRequest, BatchJobResponse, HealthResponse,
+    NSFWResult,
+)
+from app.queue import JobQueue, JobState
+from app.worker import NSFWWorker
+
+# ── Globals ──────────────────────────────────────────────────────────────────
+job_queue: JobQueue = None
+worker: NSFWWorker = None
+
+
+# ── Lifespan ──────────────────────────────────────────────────────────────────
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Start worker pool on startup, shut down cleanly on exit."""
+    global job_queue, worker
+
+    job_queue = JobQueue(maxsize=500)
+    worker = NSFWWorker(
+        queue=job_queue,
+        weights_path="models/open_nsfw-weights.npy",
+        num_workers=2,       # tune to your GPU/CPU count
+        batch_size=8,
+    )
+    await worker.start()
+    print("✅  NSFW worker pool started")
+
+    yield
+
+    await worker.stop()
+    print("🛑  NSFW worker pool stopped")
+
+
+# ── App ───────────────────────────────────────────────────────────────────────
+app = FastAPI(
+    title="NSFW Detection API",
+    description=(
+        "Production-ready NSFW content detection using Yahoo's Open NSFW model. "
+        "Supports single-image and batch processing via an async job queue."
+    ),
+    version="1.0.0",
+    lifespan=lifespan,
+)
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+
+# ── Health ────────────────────────────────────────────────────────────────────
+@app.get("/health", response_model=HealthResponse, tags=["System"])
+async def health():
+    """Liveness + readiness probe."""
+    stats = job_queue.stats() if job_queue else {}
+    return HealthResponse(
+        status="ok",
+        model_loaded=worker.model_ready if worker else False,
+        queue_depth=stats.get("pending", 0),
+        workers=stats.get("workers", 0),
+    )
+
+
+# ── Single Image ──────────────────────────────────────────────────────────────
+@app.post("/detect", response_model=JobResponse, tags=["Detection"])
+async def detect_image(
+    file: UploadFile = File(...),
+    webhook_url: Optional[str] = Form(None)
+):
+    """
+    Submit a single image for NSFW analysis.
+
+    Returns a **job_id** immediately. Poll `/jobs/{job_id}` for the result.
+    Accepts: image/jpeg, image/png, image/webp
+    """
+    _validate_content_type(file.content_type)
+
+    image_bytes = await file.read()
+    if len(image_bytes) > 10 * 1024 * 1024:  # 10 MB guard
+        raise HTTPException(413, "Image must be ≤ 10 MB")
+
+    job_id = str(uuid.uuid4())
+    try:
+        await job_queue.enqueue(job_id, image_bytes, webhook_url=webhook_url)
+    except asyncio.QueueFull:
+        raise HTTPException(503, "Queue is full — retry later")
+
+    return JobResponse(job_id=job_id, status=JobState.PENDING)
+
+
+# ── Single Image (Synchronous) ────────────────────────────────────────────────
+@app.post("/detect/direct", response_model=NSFWResult, tags=["Detection"])
+async def detect_direct(file: UploadFile = File(...)):
+    """
+    Submit a single image and wait for the result synchronously.
+    
+    Bypasses the queue system to give an immediate response.
+    Accepts: image/jpeg, image/png, image/webp
+    """
+    _validate_content_type(file.content_type)
+
+    image_bytes = await file.read()
+    if len(image_bytes) > 10 * 1024 * 1024:  # 10 MB guard
+        raise HTTPException(413, "Image must be ≤ 10 MB")
+
+    try:
+        nsfw, sfw, elapsed = await worker.predict_direct(image_bytes)
+    except Exception as e:
+        raise HTTPException(500, f"Inference failed: {str(e)}")
+
+    label = "nsfw" if nsfw > 0.8 else "sfw"
+    return NSFWResult(
+        nsfw_score=round(nsfw, 6),
+        sfw_score=round(sfw, 6),
+        label=label,
+        elapsed_ms=round(elapsed, 2)
+    )
+
+
+# ── Batch ─────────────────────────────────────────────────────────────────────
+@app.post("/detect/batch", response_model=BatchJobResponse, tags=["Detection"])
+async def detect_batch(
+    files: list[UploadFile] = File(...),
+    webhook_url: Optional[str] = Form(None)
+):
+    """
+    Submit up to 32 images in one request.
+
+    Returns a list of job IDs in the same order as the uploaded files.
+    """
+    if len(files) > 32:
+        raise HTTPException(400, "Maximum 32 images per batch")
+
+    job_ids = []
+    for file in files:
+        _validate_content_type(file.content_type)
+        image_bytes = await file.read()
+        job_id = str(uuid.uuid4())
+        try:
+            await job_queue.enqueue(job_id, image_bytes, webhook_url=webhook_url)
+        except asyncio.QueueFull:
+            raise HTTPException(503, "Queue is full — retry later")
+        job_ids.append(job_id)
+
+    return BatchJobResponse(job_ids=job_ids, count=len(job_ids))
+
+
+# ── URL-based detection ───────────────────────────────────────────────────────
+@app.post("/detect/url", response_model=JobResponse, tags=["Detection"])
+async def detect_url(body: BatchRequest):
+    """
+    Submit an image URL for NSFW analysis.
+
+    The worker fetches the URL server-side (avoids CORS issues).
+    """
+    import httpx
+
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            resp = await client.get(str(body.url))
+            resp.raise_for_status()
+    except Exception as e:
+        raise HTTPException(400, f"Could not fetch URL: {e}")
+
+    content_type = resp.headers.get("content-type", "")
+    if not any(t in content_type for t in ("jpeg", "png", "webp", "image")):
+        raise HTTPException(415, "URL must point to an image")
+
+    job_id = str(uuid.uuid4())
+    try:
+        await job_queue.enqueue(job_id, resp.content, webhook_url=body.webhook_url)
+    except asyncio.QueueFull:
+        raise HTTPException(503, "Queue is full — retry later")
+
+    return JobResponse(job_id=job_id, status=JobState.PENDING)
+
+
+# ── Job Status ────────────────────────────────────────────────────────────────
+@app.get("/jobs/{job_id}", response_model=JobResultResponse, tags=["Jobs"])
+async def get_job(job_id: str):
+    """
+    Poll a job for its current status and result.
+
+    **States**: `pending` → `processing` → `done` | `failed`
+
+    Result fields (when done):
+    - `nsfw_score`  – probability 0.0–1.0 that the image is NSFW
+    - `sfw_score`   – probability 0.0–1.0 that the image is safe
+    - `label`       – `"nsfw"` if nsfw_score > 0.8, else `"sfw"`
+    - `elapsed_ms`  – inference time in milliseconds
+    """
+    result = job_queue.get_result(job_id)
+    if result is None:
+        raise HTTPException(404, f"Job '{job_id}' not found")
+    return result
+
+
+@app.delete("/jobs/{job_id}", tags=["Jobs"])
+async def cancel_job(job_id: str):
+    """Cancel a pending job (has no effect if already processing)."""
+    removed = job_queue.cancel(job_id)
+    if not removed:
+        raise HTTPException(404, f"Job '{job_id}' not found or already started")
+    return {"cancelled": job_id}
+
+
+# ── Helpers ───────────────────────────────────────────────────────────────────
+ALLOWED_TYPES = {"image/jpeg", "image/png", "image/webp", "image/jpg"}
+
+def _validate_content_type(ct: Optional[str]):
+    if ct not in ALLOWED_TYPES:
+        raise HTTPException(
+            415,
+            f"Unsupported media type '{ct}'. Allowed: {', '.join(ALLOWED_TYPES)}"
+        )
