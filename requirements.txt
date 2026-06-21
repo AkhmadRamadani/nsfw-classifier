@@ -5,6 +5,7 @@ python-multipart>=0.0.9   # for UploadFile
 httpx>=0.27.0             # for URL detection + test client
 pydantic>=2.7.0
 slowapi>=0.1.9            # rate limiting
+prometheus-client>=0.20.0 # /metrics endpoint
 
 # ML
 numpy>=1.26.0

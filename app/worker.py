@@ -20,9 +20,16 @@ from typing import Optional
 
 from app.queue import JobQueue, QueueItem
 from app.model import NSFWModelRunner
-from app.config import NSFW_THRESHOLD
+from app.config import NSFW_THRESHOLD, WEBHOOK_MAX_RETRIES
+from prometheus_client import Counter as PromCounter
 
 logger = logging.getLogger("nsfw.worker")
+
+WEBHOOK_COUNT = PromCounter(
+    "nsfw_webhooks_total",
+    "Webhook delivery outcomes",
+    ["status"],
+)
 
 
 class NSFWWorker:
@@ -152,11 +159,32 @@ class NSFWWorker:
         )
 
     async def _send_webhook(self, url: str, payload: dict):
-        """Send an HTTP POST to the specified webhook URL."""
+        """Send an HTTP POST to the specified webhook URL with retry."""
         import httpx
-        try:
-            async with httpx.AsyncClient(timeout=5.0) as client:
-                await client.post(url, json=payload)
-                logger.debug("Webhook sent to %s for job %s", url, payload.get("job_id"))
-        except Exception as exc:
-            logger.warning("Failed to send webhook to %s: %s", url, exc)
+
+        job_id = payload.get("job_id", "unknown")
+        for attempt in range(1, WEBHOOK_MAX_RETRIES + 1):
+            try:
+                async with httpx.AsyncClient(timeout=5.0) as client:
+                    resp = await client.post(url, json=payload)
+                    resp.raise_for_status()
+                logger.debug(
+                    "Webhook sent to %s for job %s (attempt %d)",
+                    url, job_id, attempt,
+                )
+                WEBHOOK_COUNT.labels(status="success").inc()
+                return  # success — stop retrying
+            except Exception as exc:
+                if attempt < WEBHOOK_MAX_RETRIES:
+                    delay = 2 ** attempt  # 2s, 4s, 8s, ...
+                    logger.warning(
+                        "Webhook attempt %d/%d failed for %s: %s — retrying in %ds",
+                        attempt, WEBHOOK_MAX_RETRIES, url, exc, delay,
+                    )
+                    await asyncio.sleep(delay)
+                else:
+                    logger.error(
+                        "Webhook delivery failed after %d attempts for %s: %s",
+                        WEBHOOK_MAX_RETRIES, url, exc,
+                    )
+                    WEBHOOK_COUNT.labels(status="failed").inc()

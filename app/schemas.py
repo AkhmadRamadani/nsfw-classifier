@@ -47,6 +47,7 @@ class JobResultResponse(BaseModel):
 class HealthResponse(BaseModel):
     status:       str
     model_loaded: bool
+    inference_ok: bool  = False
     queue_depth:  int
     workers:      int
 

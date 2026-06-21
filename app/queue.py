@@ -7,6 +7,11 @@ Features
 - Thread-safe result store with TTL expiry (default 10 min)
 - Job cancellation for items still in the pending queue
 - Queue stats for the /health endpoint
+
+WARNING: This is an in-memory implementation. All data is lost on process
+restart. For production use with persistence requirements, replace
+ResultStore with a Redis or database-backed implementation that satisfies
+the same interface (set, get, delete, purge_expired, __len__).
 """
 
 from __future__ import annotations

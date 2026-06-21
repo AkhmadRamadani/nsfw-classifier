@@ -25,6 +25,11 @@ ALLOWED_CONTENT_TYPES: set[str] = {
 }
 
 # ── Queue / Workers ──────────────────────────────────────────────────────────
+# NOTE: The default queue and result store are IN-MEMORY. All pending jobs and
+# completed results are lost on restart. For production deployments that need
+# persistence across restarts, swap the ResultStore backend for Redis or a
+# database. See the ResultStore class in app/queue.py for the interface to
+# implement.
 QUEUE_MAXSIZE: int = int(os.getenv("QUEUE_MAXSIZE", "500"))
 RESULT_TTL_SECONDS: int = int(os.getenv("RESULT_TTL_SECONDS", "600"))
 
@@ -35,6 +40,10 @@ BATCH_SIZE: int = int(os.getenv("BATCH_SIZE", "1"))
 # ── Rate Limiting ────────────────────────────────────────────────────────────
 # slowapi rate limit string (e.g. "60/minute", "10/second").
 RATE_LIMIT: str = os.getenv("RATE_LIMIT", "60/minute")
+
+# ── Webhooks ─────────────────────────────────────────────────────────────────
+# Max retry attempts for webhook delivery (exponential backoff: 2s, 4s, 8s, ...).
+WEBHOOK_MAX_RETRIES: int = int(os.getenv("WEBHOOK_MAX_RETRIES", "3"))
 
 # ── Model ────────────────────────────────────────────────────────────────────
 MODEL_NAME: str = os.getenv("MODEL_NAME", "Falconsai/nsfw_image_detection")

@@ -25,6 +25,9 @@ Client ──POST /detect─────────▶ AsyncQueue ────�
 | Webhooks | Optional webhooks upon job completion |
 | Rate Limiting | slowapi per-IP rate limiting on all detect endpoints |
 | SSRF Protection | URL validation blocks private/internal/metadata IPs |
+| Observability | Prometheus /metrics endpoint with request + inference metrics |
+| Health Checks | Dry-run inference verification on /health |
+| Webhook Reliability | Exponential backoff retry (configurable attempts) |
 | Structured Logging | JSON or text logging via `LOG_FORMAT` env var |
 | Containerized Model | Weights are downloaded during Docker build for fast startup |
 | GPU Support | CUDA-enabled PyTorch via `TORCH_DEVICE=gpu` build arg |
@@ -74,6 +77,7 @@ All tuneable values are centralized in `app/config.py` and overridable via envir
 | `EXECUTOR_THREADS` | `4` | ThreadPoolExecutor threads for inference |
 | `BATCH_SIZE` | `1` | Reserved for future batched inference |
 | `RATE_LIMIT` | `60/minute` | slowapi rate limit per IP |
+| `WEBHOOK_MAX_RETRIES` | `3` | Max webhook delivery retry attempts |
 | `MODEL_NAME` | `Falconsai/nsfw_image_detection` | Hugging Face model ID |
 | `LOG_FORMAT` | `text` | `text` for development, `json` for production |
 | `LOG_LEVEL` | `INFO` | Logging verbosity |

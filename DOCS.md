@@ -173,6 +173,8 @@ curl http://localhost:8000/jobs/b3d2c1a0-...
 
 If you provide a `webhook_url`, the API will send a `POST` request to that URL when the job completes or fails.
 
+Webhook delivery uses **exponential backoff retry** (up to 3 attempts by default). If the first delivery fails, it retries after 2s, then 4s. Configure with `WEBHOOK_MAX_RETRIES`.
+
 **Success:**
 ```json
 {
@@ -200,14 +202,20 @@ If you provide a `webhook_url`, the API will send a `POST` request to that URL w
 
 ### `GET /health`
 
+The health endpoint runs a dry-run inference to verify the model pipeline is fully functional.
+
 ```json
 {
   "status": "ok",
   "model_loaded": true,
+  "inference_ok": true,
   "queue_depth": 0,
   "workers": 2
 }
 ```
+
+- `status` is `"ok"` when inference succeeds, `"degraded"` when the model loaded but inference failed.
+- `inference_ok` reports whether a dry-run prediction completed successfully.
 
 The Docker deployment includes a built-in healthcheck that pings `/health` every 30 seconds.
 
@@ -228,6 +236,27 @@ The API supports two log formats controlled by the `LOG_FORMAT` environment vari
 ```
 
 Set `LOG_LEVEL` to control verbosity (`DEBUG`, `INFO`, `WARNING`, `ERROR`).
+
+---
+
+## Prometheus Metrics
+
+### `GET /metrics`
+
+Exposes Prometheus-compatible metrics for monitoring.
+
+```bash
+curl http://localhost:8000/metrics
+```
+
+**Available metrics:**
+
+| Metric | Type | Labels | Description |
+|---|---|---|---|
+| `nsfw_requests_total` | Counter | `endpoint`, `status` | Total detection requests |
+| `nsfw_inference_seconds` | Histogram | — | Model inference latency |
+| `nsfw_queue_depth` | Gauge | — | Pending jobs in queue |
+| `nsfw_webhooks_total` | Counter | `status` | Webhook outcomes (success/failed) |
 
 ---
 

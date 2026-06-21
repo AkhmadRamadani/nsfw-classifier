@@ -15,11 +15,14 @@ from urllib.parse import urlparse
 
 from fastapi import FastAPI, HTTPException, UploadFile, File, Form, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, Response
 import httpx
 from slowapi import Limiter
 from slowapi.util import get_remote_address
 from slowapi.errors import RateLimitExceeded
+from prometheus_client import (
+    Counter, Histogram, Gauge, generate_latest, CONTENT_TYPE_LATEST,
+)
 
 from app.schemas import (
     JobResponse, JobResultResponse,
@@ -42,6 +45,22 @@ logger = logging.getLogger("nsfw.api")
 job_queue: JobQueue = None
 worker: NSFWWorker = None
 limiter = Limiter(key_func=get_remote_address)
+
+# ── Prometheus Metrics ───────────────────────────────────────────────────────
+REQUEST_COUNT = Counter(
+    "nsfw_requests_total",
+    "Total detection requests",
+    ["endpoint", "status"],
+)
+INFERENCE_LATENCY = Histogram(
+    "nsfw_inference_seconds",
+    "Model inference time in seconds",
+    buckets=[0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0],
+)
+QUEUE_DEPTH = Gauge(
+    "nsfw_queue_depth",
+    "Number of jobs waiting in the queue",
+)
 
 
 # ── Lifespan ──────────────────────────────────────────────────────────────────
@@ -98,13 +117,52 @@ app.add_middleware(
 # ── Health ────────────────────────────────────────────────────────────────────
 @app.get("/health", response_model=HealthResponse, tags=["System"])
 async def health():
-    """Liveness + readiness probe."""
+    """Liveness + readiness probe with model inference dry-run."""
     stats = job_queue.stats() if job_queue else {}
+
+    # Update the queue depth gauge on each health check
+    QUEUE_DEPTH.set(stats.get("pending", 0))
+
+    # Run a tiny dry-run inference to verify the model pipeline works
+    inference_ok = False
+    if worker and worker.model_ready:
+        try:
+            # 1x1 white JPEG — minimal test image
+            tiny_jpeg = (
+                b"\xff\xd8\xff\xe0\x00\x10JFIF\x00\x01\x01\x00\x00\x01\x00"
+                b"\x01\x00\x00\xff\xdb\x00C\x00\x08\x06\x06\x07\x06\x05\x08"
+                b"\x07\x07\x07\t\t\x08\n\x0c\x14\r\x0c\x0b\x0b\x0c\x19\x12"
+                b"\x13\x0f\x14\x1d\x1a\x1f\x1e\x1d\x1a\x1c\x1c $.' \",#\x1c"
+                b"\x1c(7),01444\x1f'9=82<.342\xff\xc0\x00\x0b\x08\x00\x01"
+                b"\x00\x01\x01\x01\x11\x00\xff\xc4\x00\x1f\x00\x00\x01\x05"
+                b"\x01\x01\x01\x01\x01\x01\x00\x00\x00\x00\x00\x00\x00\x00"
+                b"\x01\x02\x03\x04\x05\x06\x07\x08\t\n\x0b\xff\xda\x00\x08"
+                b"\x01\x01\x00\x00?\x00T\xdb\x9e\xb7\xff\xd9"
+            )
+            loop = asyncio.get_running_loop()
+            await loop.run_in_executor(
+                worker._executor, worker._runner.predict, tiny_jpeg
+            )
+            inference_ok = True
+        except Exception:
+            inference_ok = False
+
     return HealthResponse(
-        status="ok",
+        status="ok" if inference_ok else "degraded",
         model_loaded=worker.model_ready if worker else False,
+        inference_ok=inference_ok,
         queue_depth=stats.get("pending", 0),
         workers=stats.get("workers", 0),
+    )
+
+
+# ── Metrics ──────────────────────────────────────────────────────────────────
+@app.get("/metrics", tags=["System"], include_in_schema=False)
+async def metrics():
+    """Prometheus metrics endpoint."""
+    return Response(
+        content=generate_latest(),
+        media_type=CONTENT_TYPE_LATEST,
     )
 
 
@@ -135,6 +193,7 @@ async def detect_image(
     except asyncio.QueueFull:
         raise HTTPException(503, "Queue is full — retry later")
 
+    REQUEST_COUNT.labels(endpoint="detect", status="ok").inc()
     return JobResponse(job_id=job_id, status=JobState.PENDING)
 
 
@@ -157,7 +216,11 @@ async def detect_direct(request: Request, file: UploadFile = File(...)):
     try:
         nsfw, sfw, elapsed = await worker.predict_direct(image_bytes)
     except Exception as e:
+        REQUEST_COUNT.labels(endpoint="detect_direct", status="error").inc()
         raise HTTPException(500, f"Inference failed: {str(e)}")
+
+    INFERENCE_LATENCY.observe(elapsed / 1000)  # ms → seconds
+    REQUEST_COUNT.labels(endpoint="detect_direct", status="ok").inc()
 
     label = "nsfw" if nsfw > NSFW_THRESHOLD else "sfw"
     return NSFWResult(
@@ -197,6 +260,7 @@ async def detect_batch(
             raise HTTPException(503, "Queue is full — retry later")
         job_ids.append(job_id)
 
+    REQUEST_COUNT.labels(endpoint="detect_batch", status="ok").inc()
     return BatchJobResponse(job_ids=job_ids, count=len(job_ids))
 
 
@@ -230,6 +294,7 @@ async def detect_url(request: Request, body: BatchRequest):
     except asyncio.QueueFull:
         raise HTTPException(503, "Queue is full — retry later")
 
+    REQUEST_COUNT.labels(endpoint="detect_url", status="ok").inc()
     return JobResponse(job_id=job_id, status=JobState.PENDING)
 
 
