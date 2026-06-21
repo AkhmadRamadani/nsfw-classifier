@@ -20,6 +20,8 @@ from typing import Optional, Tuple
 
 import numpy as np
 
+from app.config import MODEL_NAME
+
 logger = logging.getLogger("nsfw.model")
 
 class NSFWModelRunner:
@@ -37,8 +39,8 @@ class NSFWModelRunner:
 
         try:
             from transformers import pipeline
-            self.classifier = pipeline("image-classification", model="Falconsai/nsfw_image_detection")
-            logger.info("Successfully loaded Hugging Face model: Falconsai/nsfw_image_detection")
+            self.classifier = pipeline("image-classification", model=MODEL_NAME)
+            logger.info("Successfully loaded Hugging Face model: %s", MODEL_NAME)
         except (ImportError, Exception) as exc:
             logger.warning(
                 "Could not load Hugging Face model (%s) — falling back to MOCK mode.", exc

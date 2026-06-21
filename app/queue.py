@@ -18,6 +18,7 @@ from threading import Lock
 from typing import Any, Dict, Optional
 
 from app.schemas import JobState, JobResultResponse, NSFWResult
+from app.config import NSFW_THRESHOLD
 
 
 @dataclass
@@ -135,7 +136,7 @@ class JobQueue:
         sfw_score: float,
         elapsed_ms: float,
     ):
-        label = "nsfw" if nsfw_score > 0.8 else "sfw"
+        label = "nsfw" if nsfw_score > NSFW_THRESHOLD else "sfw"
         data = self._results.get(job_id) or {}
         data.update({
             "status":  JobState.DONE,

@@ -7,6 +7,7 @@ import asyncio
 import io
 import time
 import pytest
+import pytest_asyncio
 from unittest.mock import patch, MagicMock
 
 from httpx import AsyncClient, ASGITransport
@@ -138,7 +139,7 @@ def mock_worker():
 
 @pytest.mark.asyncio
 class TestAPI:
-    @pytest.fixture(autouse=True)
+    @pytest_asyncio.fixture(autouse=True)
     async def client(self):
         """Start app with mocked worker, yield async test client."""
         with patch("app.main.NSFWWorker") as MockWorkerClass:
@@ -151,10 +152,21 @@ class TestAPI:
             MockWorkerClass.return_value = mock_w
 
             from app.main import app
+            import app.main as main_mod
+
+            # Directly initialise the globals since ASGI transport
+            # doesn't trigger FastAPI lifespan events.
+            test_queue = JobQueue(maxsize=10)
+            main_mod.job_queue = test_queue
+            main_mod.worker = mock_w
+
             transport = ASGITransport(app=app)
             async with AsyncClient(transport=transport, base_url="http://test") as ac:
                 self.client = ac
                 yield
+
+            main_mod.job_queue = None
+            main_mod.worker = None
 
     async def test_health(self):
         resp = await self.client.get("/health")

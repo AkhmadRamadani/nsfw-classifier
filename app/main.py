@@ -6,12 +6,16 @@ Production-ready FastAPI service with async queue processing.
 import uuid
 import time
 import asyncio
+import logging
 from contextlib import asynccontextmanager
 from typing import Optional
 
-from fastapi import FastAPI, HTTPException, UploadFile, File, Form, BackgroundTasks
+from fastapi import FastAPI, HTTPException, UploadFile, File, Form, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
+from slowapi import Limiter
+from slowapi.util import get_remote_address
+from slowapi.errors import RateLimitExceeded
 
 from app.schemas import (
     JobResponse, JobResultResponse,
@@ -20,10 +24,20 @@ from app.schemas import (
 )
 from app.queue import JobQueue, JobState
 from app.worker import NSFWWorker
+from app.config import (
+    NSFW_THRESHOLD, MAX_IMAGE_BYTES, ALLOWED_CONTENT_TYPES,
+    QUEUE_MAXSIZE, NUM_WORKERS, BATCH_SIZE, RATE_LIMIT,
+)
+from app.logging_config import setup_logging
+
+# ── Logging ──────────────────────────────────────────────────────────────────
+setup_logging()
+logger = logging.getLogger("nsfw.api")
 
 # ── Globals ──────────────────────────────────────────────────────────────────
 job_queue: JobQueue = None
 worker: NSFWWorker = None
+limiter = Limiter(key_func=get_remote_address)
 
 
 # ── Lifespan ──────────────────────────────────────────────────────────────────
@@ -32,20 +46,20 @@ async def lifespan(app: FastAPI):
     """Start worker pool on startup, shut down cleanly on exit."""
     global job_queue, worker
 
-    job_queue = JobQueue(maxsize=500)
+    job_queue = JobQueue(maxsize=QUEUE_MAXSIZE)
     worker = NSFWWorker(
         queue=job_queue,
         weights_path="models/open_nsfw-weights.npy",
-        num_workers=2,       # tune to your GPU/CPU count
-        batch_size=8,
+        num_workers=NUM_WORKERS,
+        batch_size=BATCH_SIZE,
     )
     await worker.start()
-    print("✅  NSFW worker pool started")
+    logger.info("NSFW worker pool started")
 
     yield
 
     await worker.stop()
-    print("🛑  NSFW worker pool stopped")
+    logger.info("NSFW worker pool stopped")
 
 
 # ── App ───────────────────────────────────────────────────────────────────────
@@ -58,6 +72,16 @@ app = FastAPI(
     version="1.0.0",
     lifespan=lifespan,
 )
+
+# ── Rate Limiting ────────────────────────────────────────────────────────────
+app.state.limiter = limiter
+
+@app.exception_handler(RateLimitExceeded)
+async def rate_limit_handler(request: Request, exc: RateLimitExceeded):
+    return JSONResponse(
+        status_code=429,
+        content={"detail": "Rate limit exceeded. Please try again later."},
+    )
 
 app.add_middleware(
     CORSMiddleware,
@@ -82,7 +106,9 @@ async def health():
 
 # ── Single Image ──────────────────────────────────────────────────────────────
 @app.post("/detect", response_model=JobResponse, tags=["Detection"])
+@limiter.limit(RATE_LIMIT)
 async def detect_image(
+    request: Request,
     file: UploadFile = File(...),
     webhook_url: Optional[str] = Form(None)
 ):
@@ -95,7 +121,7 @@ async def detect_image(
     _validate_content_type(file.content_type)
 
     image_bytes = await file.read()
-    if len(image_bytes) > 10 * 1024 * 1024:  # 10 MB guard
+    if len(image_bytes) > MAX_IMAGE_BYTES:  # size guard
         raise HTTPException(413, "Image must be ≤ 10 MB")
 
     job_id = str(uuid.uuid4())
@@ -109,7 +135,8 @@ async def detect_image(
 
 # ── Single Image (Synchronous) ────────────────────────────────────────────────
 @app.post("/detect/direct", response_model=NSFWResult, tags=["Detection"])
-async def detect_direct(file: UploadFile = File(...)):
+@limiter.limit(RATE_LIMIT)
+async def detect_direct(request: Request, file: UploadFile = File(...)):
     """
     Submit a single image and wait for the result synchronously.
     
@@ -119,7 +146,7 @@ async def detect_direct(file: UploadFile = File(...)):
     _validate_content_type(file.content_type)
 
     image_bytes = await file.read()
-    if len(image_bytes) > 10 * 1024 * 1024:  # 10 MB guard
+    if len(image_bytes) > MAX_IMAGE_BYTES:  # size guard
         raise HTTPException(413, "Image must be ≤ 10 MB")
 
     try:
@@ -127,7 +154,7 @@ async def detect_direct(file: UploadFile = File(...)):
     except Exception as e:
         raise HTTPException(500, f"Inference failed: {str(e)}")
 
-    label = "nsfw" if nsfw > 0.8 else "sfw"
+    label = "nsfw" if nsfw > NSFW_THRESHOLD else "sfw"
     return NSFWResult(
         nsfw_score=round(nsfw, 6),
         sfw_score=round(sfw, 6),
@@ -138,7 +165,9 @@ async def detect_direct(file: UploadFile = File(...)):
 
 # ── Batch ─────────────────────────────────────────────────────────────────────
 @app.post("/detect/batch", response_model=BatchJobResponse, tags=["Detection"])
+@limiter.limit(RATE_LIMIT)
 async def detect_batch(
+    request: Request,
     files: list[UploadFile] = File(...),
     webhook_url: Optional[str] = Form(None)
 ):
@@ -166,7 +195,8 @@ async def detect_batch(
 
 # ── URL-based detection ───────────────────────────────────────────────────────
 @app.post("/detect/url", response_model=JobResponse, tags=["Detection"])
-async def detect_url(body: BatchRequest):
+@limiter.limit(RATE_LIMIT)
+async def detect_url(request: Request, body: BatchRequest):
     """
     Submit an image URL for NSFW analysis.
 
@@ -224,11 +254,10 @@ async def cancel_job(job_id: str):
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
-ALLOWED_TYPES = {"image/jpeg", "image/png", "image/webp", "image/jpg"}
 
 def _validate_content_type(ct: Optional[str]):
-    if ct not in ALLOWED_TYPES:
+    if ct not in ALLOWED_CONTENT_TYPES:
         raise HTTPException(
             415,
-            f"Unsupported media type '{ct}'. Allowed: {', '.join(ALLOWED_TYPES)}"
+            f"Unsupported media type '{ct}'. Allowed: {', '.join(ALLOWED_CONTENT_TYPES)}"
         )
