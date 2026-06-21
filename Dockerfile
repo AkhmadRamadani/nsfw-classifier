@@ -24,5 +24,15 @@ RUN python -c "from transformers import pipeline; pipeline('image-classification
 
 EXPOSE 8000
 
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", \
-     "--workers", "1", "--loop", "uvloop", "--http", "h11"]
+# ── Runtime config ───────────────────────────────────────────────────────────
+# UVICORN_WORKERS controls the number of uvicorn worker *processes*.
+# This is separate from NUM_WORKERS (asyncio coroutines inside each process).
+# Default 1 is fine for most deployments; bump for multi-core CPU serving.
+ENV UVICORN_WORKERS=1
+
+CMD ["sh", "-c", "uvicorn app.main:app \
+  --host 0.0.0.0 \
+  --port 8000 \
+  --workers ${UVICORN_WORKERS} \
+  --loop uvloop \
+  --http h11"]

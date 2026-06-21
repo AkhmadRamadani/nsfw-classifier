@@ -275,3 +275,20 @@ docker compose up -d
 ```
 
 Or edit the `TORCH_DEVICE` arg directly in `docker-compose.yml`.
+
+### Resource Limits
+
+The default `docker-compose.yml` sets memory and CPU limits to prevent a single runaway job from exhausting the host:
+
+| Resource | Limit | Reservation |
+|---|---|---|
+| Memory | 2 GB | 512 MB |
+| CPU | 2.0 cores | 0.5 cores |
+
+Adjust these in `docker-compose.yml` under `deploy.resources`.
+
+### Environment Variables
+
+All app config is passed via environment variables in `docker-compose.yml`. Key Docker-specific ones:
+
+- `UVICORN_WORKERS` — number of uvicorn worker processes (default 1). Bump for multi-core serving. This is separate from `NUM_WORKERS` (asyncio coroutines inside each process).

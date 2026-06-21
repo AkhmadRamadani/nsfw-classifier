@@ -78,6 +78,7 @@ All tuneable values are centralized in `app/config.py` and overridable via envir
 | `BATCH_SIZE` | `1` | Reserved for future batched inference |
 | `RATE_LIMIT` | `60/minute` | slowapi rate limit per IP |
 | `WEBHOOK_MAX_RETRIES` | `3` | Max webhook delivery retry attempts |
+| `UVICORN_WORKERS` | `1` | Uvicorn worker processes (bump for multi-core) |
 | `MODEL_NAME` | `Falconsai/nsfw_image_detection` | Hugging Face model ID |
 | `LOG_FORMAT` | `text` | `text` for development, `json` for production |
 | `LOG_LEVEL` | `INFO` | Logging verbosity |
@@ -107,6 +108,7 @@ nsfw-api/
 ├── Dockerfile
 ├── docker-compose.yml
 ├── .dockerignore
+├── pyproject.toml          # Project metadata + deps (pip install -e .)
 ├── DOCS.md                 # API Reference and Usage
 └── requirements.txt
 ```
