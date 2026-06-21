@@ -13,6 +13,7 @@ from typing import Optional
 from fastapi import FastAPI, HTTPException, UploadFile, File, Form, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
+import httpx
 from slowapi import Limiter
 from slowapi.util import get_remote_address
 from slowapi.errors import RateLimitExceeded
@@ -202,7 +203,6 @@ async def detect_url(request: Request, body: BatchRequest):
 
     The worker fetches the URL server-side (avoids CORS issues).
     """
-    import httpx
 
     try:
         async with httpx.AsyncClient(timeout=10.0) as client:

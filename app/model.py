@@ -24,6 +24,11 @@ from app.config import MODEL_NAME
 
 logger = logging.getLogger("nsfw.model")
 
+# Maximum dimension (width or height) before we resize.  The HF pipeline
+# resizes internally anyway, but doing it ourselves on large images saves
+# a lot of memory and speeds up the PIL → tensor conversion.
+MAX_IMAGE_DIMENSION: int = 1024
+
 class NSFWModelRunner:
     """
     Thread-safe wrapper around the Hugging Face Falconsai/nsfw_image_detection model.
@@ -69,6 +74,12 @@ class NSFWModelRunner:
 
         from PIL import Image
         image = Image.open(io.BytesIO(image_bytes)).convert("RGB")
+
+        # Downscale large images before sending to the model.
+        # The pipeline resizes to 224x224 anyway, but decoding a 4K image
+        # into memory first is wasteful.
+        if max(image.size) > MAX_IMAGE_DIMENSION:
+            image.thumbnail((MAX_IMAGE_DIMENSION, MAX_IMAGE_DIMENSION), Image.LANCZOS)
 
         # The Hugging Face pipeline handles resizing, normalization, and inference
         results = self.classifier(image)

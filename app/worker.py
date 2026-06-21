@@ -20,6 +20,7 @@ from typing import Optional
 
 from app.queue import JobQueue, QueueItem
 from app.model import NSFWModelRunner
+from app.config import NSFW_THRESHOLD
 
 logger = logging.getLogger("nsfw.worker")
 
@@ -121,7 +122,7 @@ class NSFWWorker:
                             "status": "done",
                             "nsfw_score": round(nsfw, 6),
                             "sfw_score": round(sfw, 6),
-                            "label": "nsfw" if nsfw > 0.8 else "sfw",
+                            "label": "nsfw" if nsfw > NSFW_THRESHOLD else "sfw",
                             "elapsed_ms": round(elapsed, 2)
                         }
                     ))

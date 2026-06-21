@@ -1,9 +1,19 @@
 FROM python:3.11-slim
 
+# ── Build args ───────────────────────────────────────────────────────────────
+# Set to "gpu" to install CUDA-enabled PyTorch (requires nvidia-docker).
+# Defaults to "cpu" for broad compatibility.
+ARG TORCH_DEVICE=cpu
 
 WORKDIR /app
 
-RUN pip install --no-cache-dir "torch>=2.4.0" --index-url https://download.pytorch.org/whl/cpu
+# Install PyTorch — CPU or GPU variant depending on build arg
+RUN if [ "$TORCH_DEVICE" = "gpu" ]; then \
+      pip install --no-cache-dir "torch>=2.4.0" --index-url https://download.pytorch.org/whl/cu121 ; \
+    else \
+      pip install --no-cache-dir "torch>=2.4.0" --index-url https://download.pytorch.org/whl/cpu ; \
+    fi
+
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 

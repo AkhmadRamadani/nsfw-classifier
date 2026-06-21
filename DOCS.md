@@ -16,6 +16,24 @@ The NSFW Detection API provides multiple ways to scan images for inappropriate c
 
 ---
 
+## Rate Limiting
+
+All detection endpoints (`/detect`, `/detect/direct`, `/detect/url`, `/detect/batch`) are rate-limited per client IP. The default limit is **60 requests per minute** and can be changed via the `RATE_LIMIT` environment variable.
+
+When the limit is exceeded, the API returns:
+
+```json
+{
+  "detail": "Rate limit exceeded. Please try again later."
+}
+```
+
+```
+HTTP/1.1 429 Too Many Requests
+```
+
+---
+
 ## Synchronous Inference
 
 ### `POST /detect/direct`
@@ -161,3 +179,41 @@ If you provide a `webhook_url`, the API will send a `POST` request to that URL w
   "workers": 2
 }
 ```
+
+The Docker deployment includes a built-in healthcheck that pings `/health` every 30 seconds.
+
+---
+
+## Logging
+
+The API supports two log formats controlled by the `LOG_FORMAT` environment variable:
+
+**Text mode** (default, good for development):
+```
+2025-06-21 14:30:00 | INFO     | nsfw.api | NSFW worker pool started
+```
+
+**JSON mode** (set `LOG_FORMAT=json`, good for production log aggregators):
+```json
+{"timestamp": "2025-06-21T14:30:00+00:00", "level": "INFO", "logger": "nsfw.api", "message": "NSFW worker pool started"}
+```
+
+Set `LOG_LEVEL` to control verbosity (`DEBUG`, `INFO`, `WARNING`, `ERROR`).
+
+---
+
+## Docker
+
+### CPU (default)
+```bash
+docker compose up --build -d
+```
+
+### GPU
+Requires [nvidia-docker](https://github.com/NVIDIA/nvidia-container-toolkit):
+```bash
+docker compose build --build-arg TORCH_DEVICE=gpu
+docker compose up -d
+```
+
+Or edit the `TORCH_DEVICE` arg directly in `docker-compose.yml`.

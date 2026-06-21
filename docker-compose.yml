@@ -2,7 +2,16 @@ version: "3.8"
 
 services:
   api:
-    build: .
+    build:
+      context: .
+      args:
+        TORCH_DEVICE: cpu   # change to "gpu" for CUDA (requires nvidia-docker)
     ports:
       - "8000:8000"
     restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c", "import httpx; httpx.get('http://localhost:8000/health').raise_for_status()"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 60s
