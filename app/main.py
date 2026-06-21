@@ -6,9 +6,12 @@ Production-ready FastAPI service with async queue processing.
 import uuid
 import time
 import asyncio
+import ipaddress
 import logging
+import socket
 from contextlib import asynccontextmanager
 from typing import Optional
+from urllib.parse import urlparse
 
 from fastapi import FastAPI, HTTPException, UploadFile, File, Form, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -120,6 +123,7 @@ async def detect_image(
     Accepts: image/jpeg, image/png, image/webp
     """
     _validate_content_type(file.content_type)
+    _validate_webhook_url(webhook_url)
 
     image_bytes = await file.read()
     if len(image_bytes) > MAX_IMAGE_BYTES:  # size guard
@@ -180,6 +184,8 @@ async def detect_batch(
     if len(files) > 32:
         raise HTTPException(400, "Maximum 32 images per batch")
 
+    _validate_webhook_url(webhook_url)
+
     job_ids = []
     for file in files:
         _validate_content_type(file.content_type)
@@ -203,6 +209,9 @@ async def detect_url(request: Request, body: BatchRequest):
 
     The worker fetches the URL server-side (avoids CORS issues).
     """
+
+    _validate_url_not_internal(str(body.url))
+    _validate_webhook_url(body.webhook_url)
 
     try:
         async with httpx.AsyncClient(timeout=10.0) as client:
@@ -261,3 +270,44 @@ def _validate_content_type(ct: Optional[str]):
             415,
             f"Unsupported media type '{ct}'. Allowed: {', '.join(ALLOWED_CONTENT_TYPES)}"
         )
+
+
+def _validate_url_not_internal(url: str) -> None:
+    """
+    Block URLs that resolve to private, loopback, link-local, or metadata IPs.
+
+    Mitigates Server-Side Request Forgery (SSRF) attacks where an attacker
+    could probe internal services (e.g. http://169.254.169.254/latest/meta-data/,
+    http://localhost:6379/, http://10.0.0.1:8080/).
+    """
+    parsed = urlparse(url)
+    if parsed.scheme not in ("http", "https"):
+        raise HTTPException(400, "URL must use http or https scheme")
+
+    hostname = parsed.hostname
+    if not hostname:
+        raise HTTPException(400, "URL has no hostname")
+
+    # Resolve hostname to IP(s); blocks before any HTTP request is made.
+    try:
+        infos = socket.getaddrinfo(hostname, None, family=socket.AF_UNSPEC)
+    except socket.gaierror:
+        raise HTTPException(400, f"Could not resolve hostname: {hostname}")
+
+    for family, _, _, _, sockaddr in infos:
+        ip = ipaddress.ip_address(sockaddr[0])
+        if ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_reserved:
+            raise HTTPException(
+                400,
+                "URL resolves to a private or internal address and is not allowed",
+            )
+        # Block the AWS/GCP/Azure metadata endpoints explicitly
+        # (they sit on a public-looking IP in some clouds)
+        if str(ip) in ("169.254.169.254", "fd00:ec2::254"):
+            raise HTTPException(400, "URL resolves to a cloud metadata endpoint")
+
+
+def _validate_webhook_url(url: Optional[str]) -> None:
+    """Validate a webhook URL if one was provided."""
+    if url is not None:
+        _validate_url_not_internal(url)

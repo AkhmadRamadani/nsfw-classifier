@@ -24,6 +24,7 @@ Client ──POST /detect─────────▶ AsyncQueue ────�
 | Direct vs Queue | Support both immediate and background processing |
 | Webhooks | Optional webhooks upon job completion |
 | Rate Limiting | slowapi per-IP rate limiting on all detect endpoints |
+| SSRF Protection | URL validation blocks private/internal/metadata IPs |
 | Structured Logging | JSON or text logging via `LOG_FORMAT` env var |
 | Containerized Model | Weights are downloaded during Docker build for fast startup |
 | GPU Support | CUDA-enabled PyTorch via `TORCH_DEVICE=gpu` build arg |

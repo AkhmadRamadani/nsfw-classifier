@@ -34,6 +34,35 @@ HTTP/1.1 429 Too Many Requests
 
 ---
 
+## SSRF Protection
+
+The API validates all user-supplied URLs before making any outbound request. This prevents Server-Side Request Forgery (SSRF) attacks where an attacker could use the API to probe internal services.
+
+**Protected endpoints:**
+- `POST /detect/url` — the image URL (`url` field)
+- `POST /detect`, `/detect/batch`, `/detect/url` — the optional `webhook_url` field
+
+**Blocked targets:**
+- Loopback addresses (`127.0.0.0/8`, `::1`)
+- Private networks (`10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16`)
+- Link-local addresses (`169.254.0.0/16`, `fe80::/10`)
+- Cloud metadata endpoints (`169.254.169.254`, `fd00:ec2::254`)
+- Reserved IP ranges
+- Non-HTTP schemes (only `http` and `https` are allowed)
+
+**Response when blocked:**
+```json
+{
+  "detail": "URL resolves to a private or internal address and is not allowed"
+}
+```
+
+```
+HTTP/1.1 400 Bad Request
+```
+
+---
+
 ## Synchronous Inference
 
 ### `POST /detect/direct`
